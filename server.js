@@ -17,7 +17,7 @@ const APP_CONFIG = {
   minRequiredVersion: "1.0.0",
   updateRequired: false,
   downloadUrl: "http://192.168.50.2:3000/download/paraflex-latest.apk",
-  releaseNotes: "Versão inicial com sistema universal de criptografia"
+  releaseNotes: "Correções layouts"
 };
 
 // 🏢 CONFIGURAÇÃO DA EMPRESA
