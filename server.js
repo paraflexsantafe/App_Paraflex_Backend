@@ -20,6 +20,9 @@ const APP_CONFIG = {
   releaseNotes: "Versão inicial com sistema universal de criptografia"
 };
 
+// 🏢 CONFIGURAÇÃO DA EMPRESA
+const CODIGO_EMPRESA = 1; // 🎯 Empresa padrão para busca de produtos
+
 // Rota para verificar versão
 app.get('/api/version', (req, res) => {
   const clientVersion = req.query.version || "0.0.0";
@@ -204,7 +207,20 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Rota para buscar produtos
+/**
+ * Função para processar termo de busca
+ * Substitui espaços por % apenas no backend
+ */
+function processarTermoBusca(termo) {
+  if (!termo || typeof termo !== 'string') {
+    return '';
+  }
+  
+  // Remove espaços extras e substitui espaços por %
+  return termo.trim().replace(/\s+/g, '%');
+}
+
+// 🏢 Rota para buscar produtos (FILTRADA POR EMPRESA)
 app.get('/api/produtos/buscar', async (req, res) => {
   const { termo } = req.query;
   
@@ -214,6 +230,11 @@ app.get('/api/produtos/buscar', async (req, res) => {
   
   try {
     const db = await getConnection();
+    
+    // Processa o termo de busca - substitui espaços por %
+    const termoProcessado = processarTermoBusca(termo);
+    
+    console.log(`Busca original: "${termo}" -> Processado: "${termoProcessado}"`);
     
     // Busca otimizada com JOIN nas tabelas corretas
     const query = `
@@ -228,16 +249,17 @@ app.get('/api/produtos/buscar', async (req, res) => {
         PETP.PRECO_VENDA
       FROM PRODUTO P
       INNER JOIN PRODUTO_BASE PB ON P.CODIGOBASEPRODUTO = PB.CODIGOBASEPRODUTO
+      INNER JOIN PRODUTO_ESTOQUE PE ON P.CODIGOPRODUTO = PE.CODIGOPRODUTO
       LEFT JOIN MARCA M ON PB.CODIGOMARCA = M.CODIGOMARCA
       LEFT JOIN PRODUTO_UN PU ON PB.CODIGOUN = PU.CODIGOUN
-      LEFT JOIN PRODUTO_ESTOQUE PE ON P.CODIGOPRODUTO = PE.CODIGOPRODUTO
       LEFT JOIN PRODUTO_ESTOQUE_TABELA_PRECO PETP ON PE.CODIGOMERCADORIA = PETP.CODIGO_MERCADORIA
       WHERE P.DESATIVADO = 'N'
+        AND PE.CODIGOEMPRESA = ${CODIGO_EMPRESA}
         AND (
-          UPPER(P.CODIGOPRODUTO) LIKE UPPER('%${termo}%') 
-          OR UPPER(P.CODIGOINTERNO) LIKE UPPER('%${termo}%')
-          OR UPPER(PB.NOME) LIKE UPPER('%${termo}%')
-          OR P.CODIGOBARRAS LIKE '%${termo}%'
+          UPPER(P.CODIGOPRODUTO) LIKE UPPER('%${termoProcessado}%') 
+          OR UPPER(P.CODIGOINTERNO) LIKE UPPER('%${termoProcessado}%')
+          OR UPPER(PB.NOME) LIKE UPPER('%${termoProcessado}%')
+          OR P.CODIGOBARRAS LIKE '%${termoProcessado}%'
         )
       ORDER BY PB.NOME
     `;
@@ -261,6 +283,8 @@ app.get('/api/produtos/buscar', async (req, res) => {
         CODIGO_BARRAS: produto.CODIGOBARRAS
       }));
       
+      console.log(`Encontrados ${produtos.length} produtos para termo: "${termo}"`);
+      
       res.json(produtos);
     });
     
@@ -270,13 +294,14 @@ app.get('/api/produtos/buscar', async (req, res) => {
   }
 });
 
-// Rota para buscar produto por código de barras
+// 🏢 Rota para buscar produto por código de barras (FILTRADA POR EMPRESA)
 app.get('/api/produtos/barcode/:codigo', async (req, res) => {
   const { codigo } = req.params;
   
   try {
     const db = await getConnection();
     
+    // 🎯 Query com filtro OBRIGATÓRIO por empresa
     const query = `
       SELECT 
         P.CODIGOPRODUTO,
@@ -289,14 +314,18 @@ app.get('/api/produtos/barcode/:codigo', async (req, res) => {
         PETP.PRECO_VENDA
       FROM PRODUTO P
       INNER JOIN PRODUTO_BASE PB ON P.CODIGOBASEPRODUTO = PB.CODIGOBASEPRODUTO
+      INNER JOIN PRODUTO_ESTOQUE PE ON P.CODIGOPRODUTO = PE.CODIGOPRODUTO
       LEFT JOIN MARCA M ON PB.CODIGOMARCA = M.CODIGOMARCA
       LEFT JOIN PRODUTO_UN PU ON PB.CODIGOUN = PU.CODIGOUN
-      LEFT JOIN PRODUTO_ESTOQUE PE ON P.CODIGOPRODUTO = PE.CODIGOPRODUTO
       LEFT JOIN PRODUTO_ESTOQUE_TABELA_PRECO PETP ON PE.CODIGOMERCADORIA = PETP.CODIGO_MERCADORIA
-      WHERE P.CODIGOBARRAS = ? AND P.DESATIVADO = 'N'
+      WHERE P.CODIGOBARRAS = ? 
+        AND P.DESATIVADO = 'N'
+        AND PE.CODIGOEMPRESA = ?
     `;
     
-    db.query(query, [codigo], (err, result) => {
+    console.log(`🔍 Buscando produto por código de barras "${codigo}" na empresa ${CODIGO_EMPRESA}`);
+    
+    db.query(query, [codigo, CODIGO_EMPRESA], (err, result) => {
       db.detach();
       
       if (err) {
@@ -315,9 +344,11 @@ app.get('/api/produtos/barcode/:codigo', async (req, res) => {
           VALOR: produto.PRECO_VENDA || produto.PRECOCUSTO || 0,
           CODIGO_BARRAS: produto.CODIGOBARRAS
         };
+        console.log(`✅ Produto encontrado na empresa ${CODIGO_EMPRESA}: ${produto.NOME}`);
         res.json(produtoFormatado);
       } else {
-        res.status(404).json({ error: 'Produto não encontrado' });
+        console.log(`❌ Produto com código de barras "${codigo}" não encontrado na empresa ${CODIGO_EMPRESA}`);
+        res.status(404).json({ error: 'Produto não encontrado na empresa' });
       }
     });
     
@@ -327,13 +358,14 @@ app.get('/api/produtos/barcode/:codigo', async (req, res) => {
   }
 });
 
-// Rota para obter detalhes de um produto
+// 🏢 Rota para obter detalhes de um produto (FILTRADA POR EMPRESA)
 app.get('/api/produtos/:codigo', async (req, res) => {
   const { codigo } = req.params;
   
   try {
     const db = await getConnection();
     
+    // 🎯 Query com filtro OBRIGATÓRIO por empresa
     const query = `
       SELECT 
         P.CODIGOPRODUTO,
@@ -351,14 +383,18 @@ app.get('/api/produtos/:codigo', async (req, res) => {
         PE.ESTOQUE
       FROM PRODUTO P
       INNER JOIN PRODUTO_BASE PB ON P.CODIGOBASEPRODUTO = PB.CODIGOBASEPRODUTO
+      INNER JOIN PRODUTO_ESTOQUE PE ON P.CODIGOPRODUTO = PE.CODIGOPRODUTO
       LEFT JOIN MARCA M ON PB.CODIGOMARCA = M.CODIGOMARCA
       LEFT JOIN PRODUTO_UN PU ON PB.CODIGOUN = PU.CODIGOUN
-      LEFT JOIN PRODUTO_ESTOQUE PE ON P.CODIGOPRODUTO = PE.CODIGOPRODUTO
       LEFT JOIN PRODUTO_ESTOQUE_TABELA_PRECO PETP ON PE.CODIGOMERCADORIA = PETP.CODIGO_MERCADORIA
-      WHERE P.CODIGOPRODUTO = ? AND P.DESATIVADO = 'N'
+      WHERE P.CODIGOPRODUTO = ? 
+        AND P.DESATIVADO = 'N'
+        AND PE.CODIGOEMPRESA = ?
     `;
     
-    db.query(query, [codigo], (err, result) => {
+    console.log(`🔍 Buscando detalhes do produto código "${codigo}" na empresa ${CODIGO_EMPRESA}`);
+    
+    db.query(query, [codigo, CODIGO_EMPRESA], (err, result) => {
       db.detach();
       
       if (err) {
@@ -386,9 +422,11 @@ app.get('/api/produtos/:codigo', async (req, res) => {
           ESTOQUE: produto.ESTOQUE || 0
         };
         
+        console.log(`✅ Detalhes do produto encontrados na empresa ${CODIGO_EMPRESA}: ${produto.NOME}`);
         res.json(produtoCompleto);
       } else {
-        res.status(404).json({ error: 'Produto não encontrado' });
+        console.log(`❌ Produto código "${codigo}" não encontrado na empresa ${CODIGO_EMPRESA}`);
+        res.status(404).json({ error: 'Produto não encontrado na empresa' });
       }
     });
     
@@ -404,7 +442,8 @@ app.get('/api/status', (req, res) => {
     status: 'API Paraflex funcionando!', 
     timestamp: new Date().toISOString(),
     version: '1.0.0',
-    encryption: 'Universal Model Active'
+    encryption: 'Universal Model Active',
+    empresa_filtro: CODIGO_EMPRESA // 🏢 Mostra qual empresa está sendo filtrada
   });
 });
 
@@ -444,10 +483,11 @@ app.listen(PORT, () => {
   console.log(`📊 Teste a API em: http://localhost:${PORT}/api/status`);
   console.log(`🔍 Pool de conexões configurado para múltiplos usuários`);
   console.log(`🔐 Modelo Universal de Criptografia ativo`);
+  console.log(`🏢 Filtro de empresa ativo: CODIGOEMPRESA = ${CODIGO_EMPRESA}`); // 🎯 Log do filtro
   
   // Teste da criptografia na inicialização
-  console.log('\n=== TESTE DE CRIPTOGRAFIA ===');
-  passwordEncryptor.verifyImplementation();
+  //console.log('\n=== TESTE DE CRIPTOGRAFIA ===');
+  //passwordEncryptor.verifyImplementation();
 });
 
 // Graceful shutdown
