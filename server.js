@@ -13,11 +13,11 @@ const path = require('path');
 
 // Configuração de versões
 const APP_CONFIG = {
-  currentVersion: "1.0.2",
+  currentVersion: "1.0.3+2",
   minRequiredVersion: "1.0.0",
   updateRequired: false,
   downloadUrl: "http://192.168.50.2:3000/download/paraflex-latest.apk",
-  releaseNotes: "Correções layouts"
+  releaseNotes: "Inclusão de código de barras"
 };
 
 // 🏢 CONFIGURAÇÃO DA EMPRESA
@@ -134,6 +134,17 @@ function getConnection() {
 // Rota de login com criptografia universal
 app.post('/api/login', async (req, res) => {
   const { usuario, senha } = req.body;
+
+  // Lista de usuários bloqueados
+  const usuariosBloqueados = ['PARAFLEX', 'SISTEMA', 'PARCEIRO'];
+  
+  // Verificar se o usuário está bloqueado
+  if (usuariosBloqueados.includes(usuario.toUpperCase())) {
+    return res.status(401).json({ 
+      success: false, 
+      message: 'Usuário não encontrado ou desativado' 
+    });
+  }
   
   try {
     const db = await getConnection();
@@ -428,6 +439,91 @@ app.get('/api/produtos/:codigo', async (req, res) => {
         console.log(`❌ Produto código "${codigo}" não encontrado na empresa ${CODIGO_EMPRESA}`);
         res.status(404).json({ error: 'Produto não encontrado na empresa' });
       }
+    });
+    
+  } catch (error) {
+    console.error('Erro de conexão:', error);
+    res.status(500).json({ error: 'Erro de conexão com banco' });
+  }
+});
+
+// Rota para atualizar código de barras do produto
+app.put('/api/produtos/:codigo/codigo-barras', async (req, res) => {
+  const { codigo } = req.params;
+  const { codigoBarras } = req.body;
+  
+  if (!codigoBarras || codigoBarras.trim() === '') {
+    return res.status(400).json({ error: 'Código de barras é obrigatório' });
+  }
+  
+  try {
+    const db = await getConnection();
+    
+    // Primeiro verifica se o produto existe
+    const checkQuery = `
+      SELECT CODIGOPRODUTO 
+      FROM PRODUTO 
+      WHERE CODIGOPRODUTO = ? AND DESATIVADO = 'N'
+    `;
+    
+    db.query(checkQuery, [codigo], (err, checkResult) => {
+      if (err) {
+        db.detach();
+        console.error('Erro ao verificar produto:', err);
+        return res.status(500).json({ error: 'Erro ao verificar produto' });
+      }
+      
+      if (checkResult.length === 0) {
+        db.detach();
+        return res.status(404).json({ error: 'Produto não encontrado' });
+      }
+      
+      // Verifica se o código de barras já existe em outro produto
+      const duplicateQuery = `
+        SELECT CODIGOPRODUTO 
+        FROM PRODUTO 
+        WHERE CODIGOBARRAS = ? AND CODIGOPRODUTO != ? AND DESATIVADO = 'N'
+      `;
+      
+      db.query(duplicateQuery, [codigoBarras.trim(), codigo], (err, duplicateResult) => {
+        if (err) {
+          db.detach();
+          console.error('Erro ao verificar duplicata:', err);
+          return res.status(500).json({ error: 'Erro ao verificar código de barras' });
+        }
+        
+        if (duplicateResult.length > 0) {
+          db.detach();
+          return res.status(409).json({ 
+            error: 'Este código de barras já está sendo usado por outro produto' 
+          });
+        }
+        
+        // Atualiza o código de barras
+        const updateQuery = `
+          UPDATE PRODUTO 
+          SET CODIGOBARRAS = ? 
+          WHERE CODIGOPRODUTO = ?
+        `;
+        
+        db.query(updateQuery, [codigoBarras.trim(), codigo], (err, updateResult) => {
+          db.detach();
+          
+          if (err) {
+            console.error('Erro ao atualizar código de barras:', err);
+            return res.status(500).json({ error: 'Erro ao atualizar código de barras' });
+          }
+          
+          console.log(`Código de barras atualizado: Produto ${codigo} -> ${codigoBarras}`);
+          
+          res.json({
+            success: true,
+            message: 'Código de barras atualizado com sucesso',
+            codigoProduto: codigo,
+            codigoBarras: codigoBarras.trim()
+          });
+        });
+      });
     });
     
   } catch (error) {
