@@ -87,6 +87,102 @@ function compareVersions(version1, version2) {
   return 0;
 }
 
+// 🔧 FUNÇÃO PARA FORMATAR DATA CORRETAMENTE
+function formatarDataPromocao(data) {
+  if (!data) return null;
+  
+  try {
+    // Se já é uma string no formato correto, retorna
+    if (typeof data === 'string') {
+      // Se tem formato brasileiro DD/MM/YYYY, retorna como está
+      if (data.match(/^\d{2}\/\d{2}\/\d{4}/)) {
+        return data.split(' ')[0]; // Remove horário se houver
+      }
+      // Se tem formato ISO, converte
+      if (data.includes('T') || data.includes('-')) {
+        const dataObj = new Date(data);
+        return formatarDataBrasileira(dataObj);
+      }
+      return data;
+    }
+    
+    // Se é Date object
+    if (data instanceof Date) {
+      return formatarDataBrasileira(data);
+    }
+    
+    // Tenta converter para Date
+    const dataObj = new Date(data);
+    if (!isNaN(dataObj.getTime())) {
+      return formatarDataBrasileira(dataObj);
+    }
+    
+    return data;
+  } catch (e) {
+    console.error('Erro ao formatar data:', e);
+    return data;
+  }
+}
+
+// 🔧 FUNÇÃO AUXILIAR PARA FORMATAR NO PADRÃO BRASILEIRO
+function formatarDataBrasileira(data) {
+  if (!data || isNaN(data.getTime())) return null;
+  
+  // Ajusta para timezone local do Brasil (UTC-3)
+  const offset = data.getTimezoneOffset();
+  const localDate = new Date(data.getTime() - (offset * 60 * 1000));
+  
+  const dia = localDate.getDate().toString().padStart(2, '0');
+  const mes = (localDate.getMonth() + 1).toString().padStart(2, '0');
+  const ano = localDate.getFullYear();
+  
+  return `${dia}/${mes}/${ano}`;
+}
+
+// 🎯 FUNÇÃO PARA VERIFICAR SE PROMOÇÃO ESTÁ ATIVA
+function verificarPromocaoAtiva(dataInicio, dataFim, precoPromocao) {
+  if (!dataInicio || !dataFim || !precoPromocao) {
+    return false;
+  }
+  
+  try {
+    const agora = new Date();
+    const hoje = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate());
+    
+    let inicioPromocao, fimPromocao;
+    
+    // Converte datas de início e fim
+    if (typeof dataInicio === 'string') {
+      inicioPromocao = new Date(dataInicio);
+    } else {
+      inicioPromocao = dataInicio;
+    }
+    
+    if (typeof dataFim === 'string') {
+      fimPromocao = new Date(dataFim);
+    } else {
+      fimPromocao = dataFim;
+    }
+    
+    // Ajusta para comparar apenas datas (sem horário)
+    const inicioPromocaoData = new Date(inicioPromocao.getFullYear(), inicioPromocao.getMonth(), inicioPromocao.getDate());
+    const fimPromocaoData = new Date(fimPromocao.getFullYear(), fimPromocao.getMonth(), fimPromocao.getDate());
+    
+    const promocaoAtiva = hoje >= inicioPromocaoData && hoje <= fimPromocaoData;
+    
+    console.log(`📅 Verificação de promoção:`);
+    console.log(`   Hoje: ${hoje.toDateString()}`);
+    console.log(`   Início: ${inicioPromocaoData.toDateString()}`);
+    console.log(`   Fim: ${fimPromocaoData.toDateString()}`);
+    console.log(`   Ativa: ${promocaoAtiva}`);
+    
+    return promocaoAtiva;
+  } catch (e) {
+    console.error('Erro ao verificar promoção:', e);
+    return false;
+  }
+}
+
 // Criar pasta de releases se não existir
 const releasesDir = path.join(__dirname, 'releases');
 if (!fs.existsSync(releasesDir)) {
@@ -101,7 +197,8 @@ const passwordEncryptor = new UniversalPasswordEncryptor();
 const pool = Firebird.pool(5, {
   host: 'localhost', // ou IP do seu servidor
   port: 3050,
-  database: 'C://SIGECOM//SIGECOM_TESTE.FDB', // caminho para seu banco
+  //database: 'C://SIGECOM//SIGECOM_TESTE.FDB', // caminho para o banco de teste
+  database: 'C://SIGECOM//SIGECOM.FDB', // caminho para o banco em produção
   user: 'SYSDBA',
   password: 'masterkey',
   lowercase_keys: false,
@@ -369,14 +466,14 @@ app.get('/api/produtos/barcode/:codigo', async (req, res) => {
   }
 });
 
-// 🏢 Rota para obter detalhes de um produto (FILTRADA POR EMPRESA)
+// 🔧 ROTA CORRIGIDA PARA DETALHES DO PRODUTO COM FORMATAÇÃO DE DATA
 app.get('/api/produtos/:codigo', async (req, res) => {
   const { codigo } = req.params;
   
   try {
     const db = await getConnection();
     
-    // 🎯 Query com filtro OBRIGATÓRIO por empresa
+    // Query com dados de promoção
     const query = `
       SELECT 
         P.CODIGOPRODUTO,
@@ -390,6 +487,9 @@ app.get('/api/produtos/:codigo', async (req, res) => {
         M.MARCA,
         PU.NOMEUN as UNIDADE,
         PE.PRECOCUSTO,
+        PE.DATA_INICIO_PROMOCAO,
+        PE.DATA_FIM_PROMOCAO,
+        PE.PRECO_VENDA_PROMOCAO,
         PETP.PRECO_VENDA,
         PE.ESTOQUE
       FROM PRODUTO P
@@ -417,6 +517,16 @@ app.get('/api/produtos/:codigo', async (req, res) => {
         const produto = result[0];
         const precoVenda = produto.PRECO_VENDA || produto.PRECOCUSTO || 0;
         
+        // 🎯 VERIFICAÇÃO DE PROMOÇÃO ATIVA COM CORREÇÃO DE DATA
+        const promocaoAtiva = verificarPromocaoAtiva(
+          produto.DATA_INICIO_PROMOCAO,
+          produto.DATA_FIM_PROMOCAO,
+          produto.PRECO_VENDA_PROMOCAO
+        );
+        
+        // Define preços baseado na promoção
+        const precoAtual = promocaoAtiva ? produto.PRECO_VENDA_PROMOCAO : precoVenda;
+        
         const produtoCompleto = {
           CODIGO: produto.CODIGOPRODUTO,
           CODIGO_INTERNO: produto.CODIGOINTERNO,
@@ -425,15 +535,30 @@ app.get('/api/produtos/:codigo', async (req, res) => {
           DESCRICAO: produto.DESCRICAO,
           MARCA: produto.MARCA || 'Sem marca',
           UNIDADE: produto.UNIDADE || 'UN',
-          VALOR: precoVenda,
-          VALOR_VISTA: (precoVenda * 0.9).toFixed(2), // 10% desconto
+          VALOR: precoAtual,
+          VALOR_VISTA: (precoAtual * 0.9).toFixed(2), // 10% desconto
           CODIGO_BARRAS: produto.CODIGOBARRAS,
           PESO: produto.PESO,
           LOCAL: produto.LOCAL,
-          ESTOQUE: produto.ESTOQUE || 0
+          ESTOQUE: produto.ESTOQUE || 0,
+          
+          // 🔧 DADOS DE PROMOÇÃO FORMATADOS CORRETAMENTE
+          PROMOCAO_ATIVA: promocaoAtiva,
+          DATA_INICIO_PROMOCAO: formatarDataPromocao(produto.DATA_INICIO_PROMOCAO),
+          DATA_FIM_PROMOCAO: formatarDataPromocao(produto.DATA_FIM_PROMOCAO),
+          PRECO_PROMOCIONAL: promocaoAtiva ? produto.PRECO_VENDA_PROMOCAO : null,
+          PRECO_NORMAL: precoVenda,
+          
+          // Campos de compatibilidade (mantidos para não quebrar frontend existente)
+          EM_PROMOCAO: promocaoAtiva,
+          VALOR_ORIGINAL: precoVenda,
+          VALOR_VISTA_ORIGINAL: (precoVenda * 0.9).toFixed(2),
+          PRECO_VENDA_PROMOCAO: produto.PRECO_VENDA_PROMOCAO
         };
         
         console.log(`✅ Detalhes do produto encontrados na empresa ${CODIGO_EMPRESA}: ${produto.NOME}`);
+        console.log(`📅 Promoção: ${promocaoAtiva ? 'ATIVA' : 'INATIVA'} - Fim: ${formatarDataPromocao(produto.DATA_FIM_PROMOCAO)}`);
+        
         res.json(produtoCompleto);
       } else {
         console.log(`❌ Produto código "${codigo}" não encontrado na empresa ${CODIGO_EMPRESA}`);
@@ -580,6 +705,7 @@ app.listen(PORT, () => {
   console.log(`🔍 Pool de conexões configurado para múltiplos usuários`);
   console.log(`🔐 Modelo Universal de Criptografia ativo`);
   console.log(`🏢 Filtro de empresa ativo: CODIGOEMPRESA = ${CODIGO_EMPRESA}`); // 🎯 Log do filtro
+  console.log(`🔧 Sistema de formatação de data corrigido`); // 🎯 Novo log
   
   // Teste da criptografia na inicialização
   //console.log('\n=== TESTE DE CRIPTOGRAFIA ===');
