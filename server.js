@@ -402,6 +402,99 @@ app.get('/api/produtos/buscar', async (req, res) => {
   }
 });
 
+// 🎉 Rota para buscar produtos em promoção (FILTRADA POR EMPRESA)
+app.get('/api/produtos/promocoes', async (req, res) => {
+  try {
+    const db = await getConnection();
+    
+    console.log(`🎉 Buscando produtos em promoção válidas para hoje na empresa ${CODIGO_EMPRESA}`);
+    
+    // Query simplificada - busca todos os produtos com dados de promoção
+    const query = `
+      SELECT 
+        P.CODIGOPRODUTO,
+        P.CODIGOINTERNO,
+        P.CODIGOBARRAS,
+        PB.NOME,
+        M.MARCA,
+        PU.NOMEUN as UNIDADE,
+        PE.PRECOCUSTO,
+        PETP.PRECO_VENDA as PRECO_ORIGINAL,
+        PE.PRECO_VENDA_PROMOCAO,
+        PE.DATA_INICIO_PROMOCAO,
+        PE.DATA_FIM_PROMOCAO
+      FROM PRODUTO P
+      INNER JOIN PRODUTO_BASE PB ON P.CODIGOBASEPRODUTO = PB.CODIGOBASEPRODUTO
+      INNER JOIN PRODUTO_ESTOQUE PE ON P.CODIGOPRODUTO = PE.CODIGOPRODUTO
+      LEFT JOIN MARCA M ON PB.CODIGOMARCA = M.CODIGOMARCA
+      LEFT JOIN PRODUTO_UN PU ON PB.CODIGOUN = PU.CODIGOUN
+      LEFT JOIN PRODUTO_ESTOQUE_TABELA_PRECO PETP ON PE.CODIGOMERCADORIA = PETP.CODIGO_MERCADORIA
+      WHERE P.DESATIVADO = 'N'
+        AND PE.CODIGOEMPRESA = ${CODIGO_EMPRESA}
+        AND PE.DATA_INICIO_PROMOCAO IS NOT NULL
+        AND PE.DATA_FIM_PROMOCAO IS NOT NULL
+        AND PE.PRECO_VENDA_PROMOCAO IS NOT NULL
+        AND PE.PRECO_VENDA_PROMOCAO > 0
+      ORDER BY PB.NOME
+    `;
+    
+    db.query(query, [], (err, result) => {
+      db.detach();
+      
+      if (err) {
+        console.error('Erro na busca de promoções:', err);
+        return res.status(500).json({ error: 'Erro na busca de promoções' });
+      }
+      
+      // 🔧 FILTRA AS PROMOÇÕES VÁLIDAS USANDO A MESMA LÓGICA DA ROTA DE DETALHES
+      const promocoesValidas = result.filter(produto => {
+        return verificarPromocaoAtiva(
+          produto.DATA_INICIO_PROMOCAO,
+          produto.DATA_FIM_PROMOCAO,
+          produto.PRECO_VENDA_PROMOCAO
+        );
+      });
+      
+      // Formata os resultados das promoções válidas
+      const promocoes = promocoesValidas.map(produto => {
+        const precoOriginal = produto.PRECO_ORIGINAL || produto.PRECOCUSTO || 0;
+        const precoPromocao = produto.PRECO_VENDA_PROMOCAO || 0;
+        
+        return {
+          CODIGO: produto.CODIGOPRODUTO,
+          CODIGO_INTERNO: produto.CODIGOINTERNO,
+          NOME: produto.NOME,
+          MARCA: produto.MARCA || 'Sem marca',
+          UNIDADE: produto.UNIDADE || 'UN',
+          PRECO_ORIGINAL: precoOriginal,
+          PRECO_PROMOCAO: precoPromocao,
+          CODIGO_BARRAS: produto.CODIGOBARRAS,
+          DATA_INICIO_PROMOCAO: formatarDataPromocao(produto.DATA_INICIO_PROMOCAO),
+          DATA_FIM_PROMOCAO: formatarDataPromocao(produto.DATA_FIM_PROMOCAO),
+          DESCONTO_PERCENTUAL: precoOriginal > 0 ? 
+            ((precoOriginal - precoPromocao) / precoOriginal * 100).toFixed(1) : 0
+        };
+      });
+      
+      // Ordena por maior desconto primeiro
+      promocoes.sort((a, b) => {
+        const descontoA = parseFloat(a.DESCONTO_PERCENTUAL) || 0;
+        const descontoB = parseFloat(b.DESCONTO_PERCENTUAL) || 0;
+        return descontoB - descontoA;
+      });
+      
+      console.log(`🎉 Encontradas ${promocoes.length} promoções válidas para hoje na empresa ${CODIGO_EMPRESA}`);
+      console.log(`📊 Total de produtos com dados de promoção: ${result.length}`);
+      
+      res.json(promocoes);
+    });
+    
+  } catch (error) {
+    console.error('Erro de conexão:', error);
+    res.status(500).json({ error: 'Erro de conexão com banco' });
+  }
+});
+
 // 🏢 Rota para buscar produto por código de barras (FILTRADA POR EMPRESA)
 app.get('/api/produtos/barcode/:codigo', async (req, res) => {
   const { codigo } = req.params;
